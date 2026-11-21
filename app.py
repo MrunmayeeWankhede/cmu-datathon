@@ -136,7 +136,8 @@ if st.button("Find care", type="primary", use_container_width=True):
     if r["results"]:
         pts = [{"lat": c["lat"], "lon": c["lon"]} for c in r["results"]]
         st.map(pd.DataFrame(pts), size=200, zoom=7)
-        st.markdown(CSS + "".join(card_html(c) for c in r["results"]), unsafe_allow_html=True)
+        cards = CSS + "".join(card_html(c) for c in r["results"])
+        st.markdown(re.sub(r"\n\s*", " ", cards), unsafe_allow_html=True)
     else:
         st.warning("No facility in the dataset has evidence for this service.")
 
