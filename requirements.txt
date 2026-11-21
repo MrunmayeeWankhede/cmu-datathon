@@ -1,0 +1,6 @@
+databricks-sdk
+databricks-sql-connector
+pyarrow
+pandas
+numpy
+streamlit
