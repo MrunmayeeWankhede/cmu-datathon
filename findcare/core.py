@@ -127,6 +127,29 @@ def warehouse_reader(warehouse_id=None):
     return read
 
 
+STATE_ALIASES = {"orissa": "odisha", "pondicherry": "puducherry", "nctofdelhi": "delhi", "newdelhi": "delhi",
+                 "uttaranchal": "uttarakhand", "andamanandnicobar": "andamanandnicobarislands"}
+
+
+def norm_state(s):
+    s = re.sub(r"^the", "", re.sub(r"[^a-z]", "", str(s or "").lower().replace("&", "and")))
+    return STATE_ALIASES.get(s, s)
+
+
+def _drop_false_state_flags(flags, states):
+    """'PIN code X is in Maharashtra but the address says Palghar' is only a real conflict if the address
+    names a different STATE. Many records put a district or city in the state field (e.g. Palghar)."""
+    keep = []
+    for f in flags:
+        m = re.match(r"^PIN code \S+ is in (.+?) but the address says (.+)$", f)
+        if m:
+            said, pin_state = norm_state(m.group(2)), norm_state(m.group(1))
+            if said not in states or said in pin_state or pin_state in said:
+                continue          # a district/city in the state field, or the same state spelt differently
+        keep.append(f)
+    return keep
+
+
 def _as_list(v):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return []
@@ -147,6 +170,8 @@ def load(reader, prefix=TABLE_PREFIX):
     TAG = reader(prefix + "tag_only")
     CITY = reader(prefix + "city").set_index("k")
     PIN = reader(prefix + "pin").astype({"pin": str}).set_index("pin")
+    states = {norm_state(x) for x in PIN["pin_state"].dropna().unique()} | set(STATE_ALIASES.values())
+    EV["loc_flags"] = EV["loc_flags"].map(lambda fl: _drop_false_state_flags(fl, states))
     DIST = reader(prefix + "district").set_index("k")
     OFFICE = reader(prefix + "office").astype({"pin": str}).set_index("k")
     return {"evidence": len(EV), "tag_only": len(TAG), "cities": len(CITY), "pins": len(PIN),
