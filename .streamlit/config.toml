@@ -1,0 +1,8 @@
+# Dark, Apple-style theme (system font, black page, dark grey cards, Apple dark-mode blue)
+[theme]
+base = "dark"
+primaryColor = "#0a84ff"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#1c1c1e"
+textColor = "#f5f5f7"
+font = "sans serif"
