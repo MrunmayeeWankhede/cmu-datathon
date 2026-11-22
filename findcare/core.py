@@ -71,9 +71,32 @@ JUNK_URL = re.compile(r"(?i)(login|signin|sign-in|creditcard|checkout|cart)")
 CHILD_TEXT = re.compile(r"(?i)(p(a)?ediatric|\bchild|\bneonat|\binfant|\bnewborn)")
 CHILD_NAME = re.compile(r"(?i)\b(child|children'?s?|p(a)?ediatric\w*|kids|shishu)\b")
 CHILD_ONLY_NOTE = "Evidence mentions children only - may not treat adults"
-SPECIALIST_NAME = re.compile(r"(?i)\b(eye|netra|nethralaya|ophthalm\w*|dental|dentist|teeth|ayurved\w*|homoeo\w*|"
-                             r"homeo\w*|physiotherap\w*|skin|derma\w*|ivf|fertility)\b")
-SPECIALIST_OK = {"ivf": {"emergency_c_section", "nicu"}, "fertility": {"emergency_c_section", "nicu"}}
+# Specialist hospitals (by name) and the services they can plausibly offer. A facility gets an "unlikely" warning
+# when its name matches a specialty and NONE of its matched specialties allows the service searched for.
+ALL = set(SERVICE_LABELS)
+SPECIALTY_GROUPS = [
+    (r"eye|netra|nethralaya|ophthalm\w*|vision", set()),
+    (r"dental|dentist|teeth|tooth", set()),
+    (r"ayurved\w*|homoeo\w*|homeo\w*|unani|siddha|naturopath\w*", set()),
+    (r"physiotherap\w*|rehab\w*", set()),
+    (r"skin|derma\w*|cosmetic|hair", set()),
+    (r"ivf|fertility", {"emergency_c_section", "nicu"}),
+    (r"maternity|matru|mother|women'?s?", {"emergency_c_section", "nicu"}),
+    (r"urolog\w*|kidney|nephro\w*|renal", {"dialysis", "ct_scan", "mri", "icu"}),
+    (r"cancer|onco\w*|tumou?r", {"ct_scan", "mri", "icu"}),
+    (r"heart|cardiac|cardio\w*", {"cardiac_surgery", "icu", "ct_scan", "mri"}),
+    (r"neuro\w*|brain|spine", {"trauma_emergency", "icu", "ct_scan", "mri"}),
+    (r"ortho\w*|bone|joint", {"trauma_emergency", "ct_scan", "mri", "icu"}),
+    (r"diagnostic\w*|imaging|scan|patholog\w*|lab", {"ct_scan", "mri"}),
+    (r"psychiatr\w*|mental|de-?addiction", set()),
+    # names that state the service itself, or a general hospital, are always compatible
+    (r"dialysis", {"dialysis"}),
+    (r"trauma|accident|emergency|casualty", {"trauma_emergency", "icu", "ct_scan", "burn_care"}),
+    (r"burns?", {"burn_care"}),
+    (r"multi-?specialit?y|super-?specialit?y|multispecialit?y|superspecialit?y|general|medical college|"
+     r"civil hospital|district hospital|institute of medical sciences|aiims", ALL),
+]
+SPECIALTY_RX = [(re.compile(rf"(?i)\b({pat})\b"), ok) for pat, ok in SPECIALTY_GROUPS]
 FILLER = r"(?i)\b(near|nearby|around|close to|outside|village|town|city|district|dist|tehsil|block|in|at|the|of|area|from)\b"
 LIST_COLS = ["evidence", "caution_mentions", "quality_flags", "loc_flags", "url_list"]
 
@@ -216,10 +239,10 @@ def children_only(name, evidence):
 
 
 def specialist_note(name, svc):
-    m = SPECIALIST_NAME.search(name or "")
-    if not m or svc in SPECIALIST_OK.get(m.group(1).lower(), set()):
+    hits = [(m.group(1), ok) for rx, ok in SPECIALTY_RX for m in [rx.search(name or "")] if m]
+    if not hits or any(svc in ok for _, ok in hits):
         return []
-    return [f"Name suggests a specialist clinic ('{m.group(1)}') - unlikely to offer {SERVICE_LABELS[svc]}"]
+    return [f"Name suggests a specialist hospital ('{hits[0][0]}') - unlikely to offer {SERVICE_LABELS[svc]}"]
 
 
 def alt_distance(r, lat, lon):
@@ -258,7 +281,8 @@ def recommend(service, location, top_n=5, for_child=False, radius_km=None):
     c["eligible"] = c["evidence_strength"].map(lambda s: cfg["penalty"][s] is not None)
     c["evidence_penalty"] = c["evidence_strength"].map(
         lambda s: cfg["penalty"][s] if cfg["penalty"][s] is not None else WEAK_LAST_RESORT_KM)
-    c["warning_penalty"] = c["warnings"].map(len) * cfg["per_warning_km"]
+    c["evidence_penalty"] = c["evidence_penalty"].astype(float)          # safe with any pandas version
+    c["warning_penalty"] = (c["warnings"].map(len) * cfg["per_warning_km"]).astype(float)
     c["effective_km"] = c["distance_km"] + c["evidence_penalty"] + c["warning_penalty"]
     c["note"] = ""
     order = ["effective_km", "distance_km"]
@@ -318,8 +342,8 @@ def _card(r, mode):
     dist_txt = (f"{r.distance_km:.0f} km away (the longer of two conflicting locations)" if r.uncertain
                 else f"{r.distance_km:.0f} km away")
     how = (dist_txt
-           + (f" + {r.evidence_penalty} km (evidence only {r.evidence_strength})" if r.evidence_penalty else "")
-           + (f" + {r.warning_penalty} km ({nw} warning{'s' if nw > 1 else ''})" if r.warning_penalty else ""))
+           + (f" + {r.evidence_penalty:.0f} km (evidence only {r.evidence_strength})" if r.evidence_penalty else "")
+           + (f" + {r.warning_penalty:.0f} km ({nw} warning{'s' if nw > 1 else ''})" if r.warning_penalty else ""))
     size = ", ".join(x for x in [f"{int(r.beds)} beds" if pd.notna(r.beds) else "",
                                  f"{int(r.doctors)} doctors" if pd.notna(r.doctors) else ""] if x)
     return {
@@ -377,6 +401,22 @@ def parse_json(text):
         return {}
 
 
+SERVICE_DEFINITIONS = {
+    "dialysis": "haemodialysis (or peritoneal dialysis) for kidney failure, done at this facility",
+    "emergency_c_section": "caesarean delivery that can be done as an emergency (obstetrician + operating theatre)",
+    "nicu": "neonatal intensive care for sick or premature newborns (not just a nursery, warmer or phototherapy)",
+    "cardiac_surgery": "open-heart surgery: bypass (CABG), valve or other cardiothoracic surgery "
+                       "(cardiology, ECG, echo or angioplasty alone do not count)",
+    "mri": "an MRI scanner at this facility",
+    "ct_scan": "a CT scanner at this facility",
+    "burn_care": "treatment of burn injuries: a burn unit or ward, or burns management by the facility's surgeons",
+    "trauma_emergency": "treating injuries from road accidents, falls or violence: a casualty / emergency department "
+                        "able to stabilise and operate on injured patients. A single-specialty hospital (urology, eye, "
+                        "heart, cancer, IVF, maternity, dental, skin) that only advertises '24x7 emergency' for its own "
+                        "specialty does NOT count - answer unclear or unlikely",
+    "icu": "an intensive care unit with ventilators for critically ill adults",
+}
+
 CHECK_SYSTEM = """You check whether a healthcare facility in India offers a specific medical service.
 Use ONLY the numbered quotes given. Do not use outside knowledge about the facility. Quotes were scraped from
 websites and directories, so they can be wrong, about another hospital, or about a different procedure.
@@ -396,11 +436,13 @@ _ai_cache = {}
 
 def ai_check(service_label, facility, quotes):
     key = (service_label, facility, tuple(quotes))
+    svc_key = next((k for k, v in SERVICE_LABELS.items() if v == service_label), "")
+    meaning = SERVICE_DEFINITIONS.get(svc_key, service_label)
     if key not in _ai_cache:
         numbered = "\n".join(f"[{i}] {q}" for i, q in enumerate(quotes, 1)) or "(no quotes)"
         try:
-            text, model = llm(CHECK_SYSTEM, f"Service: {service_label}\nFacility name: {facility}\nQuotes:\n{numbered}",
-                              max_tokens=200)
+            text, model = llm(CHECK_SYSTEM, f"Service: {service_label}\nWhat counts as this service: {meaning}\n"
+                                            f"Facility name: {facility}\nQuotes:\n{numbered}", max_tokens=200)
             j = parse_json(text)
             v = str(j.get("verdict", "unclear")).lower().strip()
             _ai_cache[key] = {"verdict": v if v in AI_PENALTY else "unclear",
