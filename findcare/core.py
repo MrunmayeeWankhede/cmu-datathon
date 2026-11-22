@@ -77,17 +77,17 @@ CHILD_ONLY_NOTE = "Evidence mentions children only - may not treat adults"
 ALL = set(SERVICE_LABELS)
 SPECIALTY_GROUPS = [
     (r"eye|netra|nethralaya|ophthalm\w*|vision", set()),
-    (r"dental|dentist|teeth|tooth", set()),
+    (r"dental|dentist|teeth|tooth|orthodont\w*", set()),
     (r"ayurved\w*|homoeo\w*|homeo\w*|unani|siddha|naturopath\w*", set()),
     (r"physiotherap\w*|rehab\w*", set()),
     (r"skin|derma\w*|cosmetic|hair", set()),
     (r"ivf|fertility", {"emergency_c_section", "nicu"}),
-    (r"maternity|matru|mother|women'?s?", {"emergency_c_section", "nicu"}),
+    (r"maternity|matru|mother\s*(?:and|&)\s*child|women'?s?", {"emergency_c_section", "nicu"}),
     (r"urolog\w*|kidney|nephro\w*|renal", {"dialysis", "ct_scan", "mri", "icu"}),
     (r"cancer|onco\w*|tumou?r", {"ct_scan", "mri", "icu"}),
-    (r"heart|cardiac|cardio\w*", {"cardiac_surgery", "icu", "ct_scan", "mri"}),
+    (r"(?<!sacred )heart|cardiac|cardio\w*", {"cardiac_surgery", "icu", "ct_scan", "mri"}),
     (r"neuro\w*|brain|spine", {"trauma_emergency", "icu", "ct_scan", "mri"}),
-    (r"ortho\w*|bone|joint", {"trauma_emergency", "ct_scan", "mri", "icu"}),
+    (r"ortho(?!dont)\w*|bone|joint", {"trauma_emergency", "ct_scan", "mri", "icu"}),
     (r"diagnostic\w*|imaging|scan|patholog\w*|lab", {"ct_scan", "mri"}),
     (r"psychiatr\w*|mental|de-?addiction", set()),
     # names that state the service itself, or a general hospital, are always compatible
@@ -232,12 +232,17 @@ def resolve_service(text):
     raise ValueError(f"Unknown service '{text}'. Try one of: {', '.join(SERVICE_LABELS.values())}")
 
 
-def locate(text):
+def locate(text, allow_office=True):
     """Coordinates / PIN / city / district / post office -> (lat, lon, description)."""
     t = str(text).strip()
     m = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)", t)
     if m:
-        return float(m.group(1)), float(m.group(2)), f"coordinates {t}"
+        a, b = float(m.group(1)), float(m.group(2))
+        if 6 <= a <= 37.5 and 68 <= b <= 97.5:
+            return a, b, f"coordinates {t}"
+        if 6 <= b <= 37.5 and 68 <= a <= 97.5:
+            raise ValueError(f"Those coordinates look swapped. Did you mean {b}, {a} (latitude first, then longitude)?")
+        raise ValueError("Those coordinates are outside India. Enter latitude first, then longitude, e.g. 25.6, 85.1.")
     if re.fullmatch(r"\d{6}", t):
         if t in PIN.index:
             r = PIN.loc[t]
@@ -251,7 +256,7 @@ def locate(text):
     if k in DIST.index:
         r = DIST.loc[k]
         return float(r.lat), float(r.lon), f"{r.pin_district} district, {r.state} (centre of its PIN codes)"
-    if k in OFFICE.index:
+    if allow_office and k in OFFICE.index:
         r = OFFICE.loc[k]
         return float(r.lat), float(r.lon), f"{r.office} post office area, {r.district}, {r.state} (PIN {r.pin})"
     # A whole state is too big to measure distance from: ask for a place inside it.
@@ -276,12 +281,14 @@ def resolve_place(text):
     cleaned = re.sub(r"\s+", " ", re.sub(r"[^\w\s,.-]", " ", re.sub(FILLER, " ", t))).strip(" ,.-")
     words = [w for w in re.split(r"[\s,]+", cleaned) if len(w) > 2]
     tries = [t, cleaned] + [" ".join(words[i:i + 2]) for i in range(len(words) - 1)] + words
-    for cand in dict.fromkeys(x for x in tries if x):
-        try:
-            locate(cand)
-            return cand
-        except ValueError:
-            pass
+    tries = list(dict.fromkeys(x for x in tries if x))
+    for allow_office in (False, True):     # cities/districts first, post-office names only as a last resort
+        for cand in tries:
+            try:
+                locate(cand, allow_office=allow_office)
+                return cand
+            except ValueError:
+                pass
     return t
 
 
@@ -299,12 +306,23 @@ def road_time(km_straight):
     return f"~{mins} min" if mins < 60 else f"~{mins // 60} h {mins % 60:02d} min"
 
 
+MATERNAL = re.compile(r"(?i)\b(mother|maternity|women|multi-?specialit?y|general)\b")
+
+
 def children_only(name, evidence):
+    if CHILD_NAME.search(name or "") and MATERNAL.search(name or ""):
+        return False                     # "Mother & Child Hospital" treats mothers too
     return bool(CHILD_NAME.search(name or "")) or (len(evidence) > 0 and all(CHILD_TEXT.search(e) for e in evidence))
+
+
+IS_HOSPITAL = re.compile(r"(?i)\b(hospitals?|medical college|institute of medical)\b")
+DIAGNOSTIC_ONLY = re.compile(r"(?i)\b(diagnostic\w*|imaging|scan|patholog\w*|lab)\b")
 
 
 def specialist_note(name, svc):
     hits = [(m.group(1), ok) for rx, ok in SPECIALTY_RX for m in [rx.search(name or "")] if m]
+    if IS_HOSPITAL.search(name or ""):   # "X Hospital & Diagnostic Centre" is a hospital, not just a lab
+        hits = [(w, ok) for w, ok in hits if not DIAGNOSTIC_ONLY.fullmatch(w)]
     if not hits or any(svc in ok for _, ok in hits):
         return []
     return [f"Name suggests a specialist hospital ('{hits[0][0]}') - unlikely to offer {SERVICE_LABELS[svc]}"]
@@ -379,6 +397,8 @@ def recommend(service, location, top_n=5, for_child=False, radius_km=None):
         t = TAG[TAG["service"] == svc].copy()
         t["d"] = km_np(lat, lon, t["best_lat"].values, t["best_lon"].values)
         t = t[(t["d"] <= radius) & ~t["name"].isin(ranked["name"])].sort_values("d")
+        if len(t):   # an eye or cancer hospital is not "worth a phone call" for trauma
+            t = t[[not specialist_note(n, svc) for n in t["name"]]]
         if len(t):
             one = len(t) == 1
             names = ", ".join(f"{n} ({d:.0f} km)" for n, d in zip(t["name"].head(3), t["d"].head(3)))
@@ -524,6 +544,8 @@ Services you can choose (pick the single best match, or "unknown"): {", ".join(S
 Guidance: labour complications, obstructed or high-risk delivery, heavy bleeding in pregnancy -> Emergency C-section;
 sick or premature newborn -> NICU; kidney failure -> Dialysis; road accident, fall, injury -> Trauma / emergency care;
 fire, scald, acid injury -> Burn care.
+Only choose a service when the message clearly needs it. Symptoms on their own (headache, fever, rash, cough,
+stomach pain, dizziness, redness) do NOT map to a service: answer "unknown". Do not diagnose.
 location: the place NAME only, e.g. "Gaya" or "800001" or "25.6, 85.1" - drop words like near, village, district; "" if none.
 patient: "child" if under 18 or a newborn, else "adult".
 Reply with JSON only: {{"service": "...", "location": "...", "patient": "...", "why": "<10 words on the service choice>"}}"""
@@ -565,12 +587,17 @@ def search(question="", service="", location="", patient="adult", top_n=5, use_a
     try:
         if question.strip():
             q = understand_question(question)
-            out["understood"] = q
-            if q["service"] == "unknown" or not q["location"]:
-                raise ValueError("Couldn't tell the service or the place from the description. "
-                                 "Please add them, or pick them from the menus instead.")
+            out["understood"] = q if q["service"] != "unknown" else None   # no "We understood: unknown" banner
+            if q["service"] == "unknown":
+                raise ValueError("FindCare finds facilities for specific services (" + ", ".join(SERVICE_LABELS.values())
+                                 + "). It doesn't diagnose symptoms. For symptoms like these, start at the nearest "
+                                 "clinic or primary health centre. If they are sudden, severe or getting worse, go to "
+                                 "the nearest emergency department now.")
+            if not q["location"]:
+                raise ValueError("Couldn't tell where the patient is. Please add a town, district or PIN code, "
+                                 "or pick from the menus instead.")
             service, location, patient = q["service"], q["location"], q["patient"]
-        for_child = str(patient).lower() == "child"
+        for_child = str(patient).lower() == "child" or resolve_service(service) == "nicu"   # NICU = newborns
         ranked, info = recommend(service, resolve_place(location), top_n=AI_POOL if use_ai else top_n,
                                  for_child=for_child)
     except ValueError as e:
