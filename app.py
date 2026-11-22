@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+import streamlit.components.v1  # noqa: F401  (st.components.v1.iframe)
 
 from findcare import core, coverage
 
@@ -204,10 +205,18 @@ def _legend(counts):
     st.markdown(f'<div style="font-size:14px;margin:4px 0 8px">{items}</div>', unsafe_allow_html=True)
 
 
+TEAM_DASHBOARD = ("https://dbc-f2aceaa2-f39e.cloud.databricks.com/dashboardsv3/01f1e6837b141b5aa704224faeaa68b9/published?o=7474655528822479")
+
+
 def coverage_tab():
     st.markdown("#### Where is trustworthy care missing?")
     st.caption("For district planners and NGOs: the same evidence ratings, warnings and search radius as "
                "*Find care*, applied to every district in India at once.")
+    st.link_button("Open the team's full planner dashboard ↗", TEAM_DASHBOARD, type="primary")
+    with st.expander("Show the team dashboard here"):
+        st.components.v1.iframe(TEAM_DASHBOARD.replace("/dashboardsv3/", "/embed/dashboardsv3/"), height=900,
+                                scrolling=True)
+        st.caption("If this area stays empty, use the button above; embedding has to be allowed in workspace settings.")
     h = _headline()
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Facilities", f"{h['facilities']:,}")
@@ -279,7 +288,7 @@ def coverage_tab():
         st.dataframe(ev.pivot_table(index="Service", columns="evidence", values="facilities", fill_value=0)
                      .reindex(columns=[c for c in coverage.EVIDENCE_ORDER if c in set(ev["evidence"])])
                      .reindex(order), use_container_width=True)
-
+    return
     st.divider()
     st.markdown("##### How much can we trust the records?")
     st.caption("Facilities carrying each warning. Warnings marked *shown to users* appear on result cards and push "
