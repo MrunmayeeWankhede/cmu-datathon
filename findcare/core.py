@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 # =====================================================================================
-# Settings: together these ARE the answer to "how did you decide?"
+# Settings: together these ARE the answer to "how did we decide?"
 # =====================================================================================
 TABLE_PREFIX = os.environ.get("FINDCARE_TABLE_PREFIX", "workspace.default.app_")
 
@@ -254,8 +254,18 @@ def locate(text):
     if k in OFFICE.index:
         r = OFFICE.loc[k]
         return float(r.lat), float(r.lon), f"{r.office} post office area, {r.district}, {r.state} (PIN {r.pin})"
+    # A whole state is too big to measure distance from: ask for a place inside it.
+    st = norm_state(t)
+    in_state = DIST[DIST["state"].map(norm_state) == st] if st else DIST.iloc[0:0]
+    if len(in_state):
+        examples = ", ".join(sorted(in_state["pin_district"].astype(str).str.title().unique())[:4])
+        raise ValueError(f"'{t}' is a state. Please enter a city, district or PIN code in it, e.g. {examples}.")
+    # Partial names: 'goa' -> North Goa, South Goa
+    partial = [DIST.loc[x, "pin_district"] for x in DIST.index if len(k) >= 3 and k in x][:4]
+    partial += [CITY.loc[x, "city"] for x in CITY.index if len(k) >= 3 and k in x][:4]
     names = list(CITY.index) + list(DIST.index)
-    close = list(dict.fromkeys(difflib.get_close_matches(k, names, n=5, cutoff=0.75)))[:3]
+    close = [str(x).title() for x in dict.fromkeys(partial)][:4] or \
+        list(dict.fromkeys(difflib.get_close_matches(k, names, n=5, cutoff=0.75)))[:3]
     hint = f" Did you mean: {', '.join(close)}?" if close else " Try a district name or a 6-digit PIN code."
     raise ValueError(f"Couldn't find '{text}'.{hint}")
 
