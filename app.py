@@ -213,6 +213,7 @@ def coverage_tab():
     st.caption("For district planners and NGOs: the same evidence ratings, warnings and search radius as "
                "*Find care*, applied to every district in India at once.")
     st.link_button("Open the team's full planner dashboard ↗", TEAM_DASHBOARD, type="primary")
+    return
     with st.expander("Show the team dashboard here"):
         st.components.v1.iframe(TEAM_DASHBOARD.replace("/dashboardsv3/", "/embed/dashboardsv3/"), height=900,
                                 scrolling=True)
