@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # ============================================================
 # STEP 7: Naive search vs FindCare
 # For every service in the 50 cities with the most facilities, compare:
@@ -19,6 +23,7 @@ runs = baseline.compare()
 print(len(runs), "searches compared")
 
 # COMMAND ----------
+
 # The headline for the slide
 print(baseline.headline(runs))
 s = baseline.summary(runs)
@@ -26,23 +31,28 @@ print(f"\nFindCare chose a different facility than the naive search in {s['findc
 print(f"It avoided a problem pick in {s['fixed']} searches.")
 
 # COMMAND ----------
+
 # By service: share of picks with at least one problem (use the chart button under the table: bar chart,
 # Service on the x-axis, both % columns as values)
 display(baseline.by_service(runs))
 
 # COMMAND ----------
+
 # Which problems the naive search walks into
 display(baseline.problem_counts(runs))
 
 # COMMAND ----------
+
 # Concrete examples for the slides: naive pick was risky, FindCare's was not
 display(baseline.examples(runs, k=15))
 
 # COMMAND ----------
+
 # Everything, for anyone who wants to dig in
 display(runs)
 
 # COMMAND ----------
+
 # Save the results as tables so they can go on the Databricks dashboard:
 #   workspace.default.naive_vs_findcare               one row per search
 #   workspace.default.naive_vs_findcare_by_service    % of picks with a problem, per service (bar chart)
