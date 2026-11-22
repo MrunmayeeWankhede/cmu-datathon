@@ -37,6 +37,7 @@ MODES = {
     "planned": dict(radius_km=100, penalty={"Strong": 0, "Moderate": 30, "Weak": 75}, per_warning_km=25),
 }
 WEAK_LAST_RESORT_KM = 75
+CITY_AGREES_KM = 50      # coordinates within this distance of the stated city/district centre "agree" with it
 ROAD_FACTOR, ROAD_SPEED_KMH = 1.4, 40
 
 MAJOR_FLAGS = {
@@ -174,8 +175,37 @@ def load(reader, prefix=TABLE_PREFIX):
     EV["loc_flags"] = EV["loc_flags"].map(lambda fl: _drop_false_state_flags(fl, states))
     DIST = reader(prefix + "district").set_index("k")
     OFFICE = reader(prefix + "office").astype({"pin": str}).set_index("k")
+    _resolve_pin_conflicts()
     return {"evidence": len(EV), "tag_only": len(TAG), "cities": len(CITY), "pins": len(PIN),
             "districts": len(DIST), "offices": len(OFFICE)}
+
+
+def _city_centre(city):
+    """Centre of a stated city (from 3+ trusted facilities) or, failing that, of a district with that name."""
+    k = norm_name(city) if isinstance(city, str) else ""
+    if k and k in CITY.index and CITY.loc[k, "n"] >= 3:
+        return float(CITY.loc[k, "lat"]), float(CITY.loc[k, "lon"])
+    if k and k in DIST.index:
+        return float(DIST.loc[k, "lat"]), float(DIST.loc[k, "lon"])
+    return None
+
+
+def _resolve_pin_conflicts():
+    """Coordinates vs PIN conflicts: let the stated city break the tie. If the city agrees with the coordinates,
+    the PIN is the odd one out - trust the coordinates, no penalty, just a note on the card."""
+    flags, notes = [], []
+    for r in EV.itertuples():
+        pin_flags = [f for f in r.loc_flags if "from its PIN code area" in f]
+        centre = _city_centre(r.address_city) if pin_flags and pd.notna(r.best_lat) else None
+        if centre and float(km_np(r.best_lat, r.best_lon, *centre)) <= CITY_AGREES_KM:
+            area = pin_flags[0].split("(")[-1].rstrip(")")
+            flags.append([f for f in r.loc_flags if f not in pin_flags])
+            notes.append([f"The record's PIN code points elsewhere ({area}), but its city and coordinates agree, "
+                          f"so we use the coordinates"])
+        else:
+            flags.append(list(r.loc_flags))
+            notes.append([])
+    EV["loc_flags"], EV["loc_notes"] = flags, notes
 
 
 # =====================================================================================
@@ -384,7 +414,7 @@ def _card(r, mode):
         "evidence_label": r.evidence_strength + (" (2+ separate procedure statements)" if r.upgraded else ""),
         "quotes": list(r.evidence),
         "warnings": list(r.warnings),
-        "cautions": ["Mentioned as referral / unavailable: " + m for m in r.caution_mentions],
+        "cautions": ["Mentioned as referral / unavailable: " + m for m in r.caution_mentions] + list(r.loc_notes),
         "how_parts": how, "ranked_km": float(r.effective_km),
         "size": size or "Not listed",
         "sources": [u for u in dict.fromkeys(r.url_list) if not JUNK_URL.search(u)][:3],
